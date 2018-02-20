@@ -32,7 +32,7 @@ import org.jetbrains.kotlin.utils.PathUtil
 import org.jetbrains.kotlin.utils.addToStdlib.firstIsInstanceOrNull
 import org.jetbrains.kotlin.utils.addToStdlib.flattenTo
 import java.io.File
-import java.net.URL
+import java.lang.reflect.InvocationTargetException
 import java.net.URLClassLoader
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -154,26 +154,37 @@ fun loadDefinitionsFromTemplates(
     val classpath = templateClasspath + additionalResolverClasspath
     LOG.info("[kts] loading script definitions $templateClassNames using cp: ${classpath.joinToString(File.pathSeparator)}")
     val baseLoader = ScriptDefinitionContributor::class.java.classLoader
-    val loader = if (classpath.isEmpty()) baseLoader else ScriptingURLClassLoader(classpath.map { it.toURI().toURL() }.toTypedArray(), baseLoader)
+    val loader = if (classpath.isEmpty()) baseLoader else URLClassLoader(classpath.map { it.toURI().toURL() }.toTypedArray(), baseLoader)
 
     templateClassNames.mapNotNull {
-        val template = loader.loadClass(it).kotlin
-        when {
-            template.annotations.firstIsInstanceOrNull<org.jetbrains.kotlin.script.ScriptTemplateDefinition>() != null ||
-                    template.annotations.firstIsInstanceOrNull<kotlin.script.templates.ScriptTemplateDefinition>() != null -> {
-                KotlinScriptDefinitionFromAnnotatedTemplate(
-                    template,
-                    environment,
-                    templateClasspath
-                )
+        try {
+            val template = loader.loadClass(it).kotlin
+            when {
+                template.annotations.firstIsInstanceOrNull<org.jetbrains.kotlin.script.ScriptTemplateDefinition>() != null ||
+                        template.annotations.firstIsInstanceOrNull<kotlin.script.templates.ScriptTemplateDefinition>() != null -> {
+                    KotlinScriptDefinitionFromAnnotatedTemplate(
+                        template,
+                        environment,
+                        templateClasspath
+                    )
+                }
+                template.annotations.firstIsInstanceOrNull<kotlin.script.experimental.annotations.KotlinScript>() != null -> {
+                    KotlinScriptDefinitionAdapterFromNewAPI(ScriptDefinitionFromAnnotatedBaseClass(template))
+                }
+                else -> {
+                    LOG.error("[kts] cannot find a valid script definition annotation on the class $template")
+                    null
+                }
             }
-            template.annotations.firstIsInstanceOrNull<kotlin.script.experimental.annotations.KotlinScript>() != null -> {
-                KotlinScriptDefinitionAdapterFromNewAPI(ScriptDefinitionFromAnnotatedBaseClass(template))
-            }
-            else -> {
-                LOG.error("[kts] cannot find a valid script definition annotation on the class $template")
-                null
-            }
+        } catch (e: ClassNotFoundException) {
+            LOG.error("[kts] cannot load script definition class $it", e)
+            null
+        } catch (e: NoClassDefFoundError) {
+            LOG.error("[kts] cannot load script definition class $it", e)
+            null
+        } catch (e: InvocationTargetException) {
+            LOG.error("[kts] cannot load script definition class $it", e)
+            null
         }
     }
 }
@@ -232,21 +243,5 @@ class BundledKotlinScriptDependenciesResolver(private val project: Project) : De
     private fun getScriptSDK(project: Project): String? {
         val jdk = ProjectJdkTable.getInstance().allJdks.firstOrNull { sdk -> sdk.sdkType is JavaSdk } ?: PathUtilEx.getAnyJdk(project)
         return jdk?.homePath
-    }
-}
-
-
-private const val LEGACY_SCRIPTING_API_PACKAGE = "org.jetbrains.kotlin.script."
-
-internal class ScriptingURLClassLoader(urls: Array<URL>, val baseClassLoader: ClassLoader) : URLClassLoader(urls, null) {
-
-    public override fun findClass(name: String): Class<*> {
-        return if (name.startsWith("kotlin.")
-            || (name.startsWith(LEGACY_SCRIPTING_API_PACKAGE) && !name.removePrefix(LEGACY_SCRIPTING_API_PACKAGE).contains('.'))
-        ) {
-            baseClassLoader.loadClass(name)
-        } else {
-            super.findClass(name)
-        }
     }
 }

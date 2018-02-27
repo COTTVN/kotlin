@@ -5,7 +5,8 @@
 
 package org.jetbrains.kotlin.script.examples.jvm.resolve.maven
 
-import org.jetbrains.kotlin.script.util.*
+import org.jetbrains.kotlin.script.util.KotlinJars
+import org.jetbrains.kotlin.script.util.getResourcePathForClass
 import java.io.File
 import kotlin.reflect.KClass
 import kotlin.script.dependencies.ScriptContents
@@ -44,20 +45,12 @@ class MyConfigurator(val baseClass: KClass<Any>? = null) : ScriptConfigurator {
     ): ResultWithDiagnostics<ScriptCompileConfiguration> {
         val annotations = processedScriptData.getOptional(ProcessedScriptDataParams.annotations)?.toList()?.takeIf { it.isNotEmpty() }
                 ?: return configuration.asSuccess()
-        val scriptContents = object : ScriptContents {
-            override val annotations: Iterable<Annotation> = annotations
-            override val file: File? = null
-            override val text: CharSequence? = null
-        }
         val diagnostics = arrayListOf<ScriptDiagnostic>()
         fun report(severity: ScriptDependenciesResolver.ReportSeverity, message: String, position: ScriptContents.Position?) {
             diagnostics.add(ScriptDiagnostic(message, mapLegacyDiagnosticSeverity(severity), mapLegacyScriptPosition(position)))
         }
         return try {
-            val newDepsFromResolver = resolver.resolve(scriptContents, emptyMap(), ::report, null).get()
-                    ?: return configuration.asSuccess(diagnostics)
-            val resolvedClasspath = newDepsFromResolver.classpath.toList().takeIf { it.isNotEmpty() }
-                    ?: return configuration.asSuccess(diagnostics)
+            val resolvedClasspath = resolver.resolveFromAnnotations(annotations)
             val newDependency = JvmDependency(resolvedClasspath)
             val updatedDeps =
                 configuration.getOptional(ScriptCompileConfigurationParams.dependencies)?.plus(newDependency) ?: listOf(newDependency)
